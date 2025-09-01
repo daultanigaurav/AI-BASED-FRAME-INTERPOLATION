@@ -241,8 +241,8 @@ If you use this project in your research, please cite:
 ```bibtex
 @misc{ai-frame-interpolation,
   title={AI-Based Frame Interpolation},
-  author={Your Name},
-  year={2024},
+  author={Gaurav Daultani , Mohd Sahil , Nandini Bansal},
+  year={2025},
   url={https://github.com/yourusername/ai-based-frame-interpolation}
 }
 ```
