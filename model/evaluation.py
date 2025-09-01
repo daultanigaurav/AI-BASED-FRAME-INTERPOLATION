@@ -103,7 +103,7 @@ def load_model(model_path, device):
 
 def interpolate_frames(model, frame1, frame2, device):
     """
-    Generate interpolated frame between two input frames
+    Generate interpolated frame between two input frames using U-Net
     
     Args:
         model: Trained U-Net model
@@ -121,6 +121,73 @@ def interpolate_frames(model, frame1, frame2, device):
     # Generate interpolated frame
     with torch.no_grad():
         interpolated = model(frame1, frame2)
+    
+    return interpolated
+
+def linear_interpolation_baseline(frame1, frame2):
+    """
+    Linear interpolation baseline using pixel averaging
+    
+    Args:
+        frame1: First frame tensor [1, 1, H, W] with values in [-1, 1]
+        frame2: Second frame tensor [1, 1, H, W] with values in [-1, 1]
+    
+    Returns:
+        Interpolated frame tensor [1, 1, H, W]
+    """
+    # Simple linear interpolation: (frame1 + frame2) / 2
+    interpolated = (frame1 + frame2) / 2.0
+    return interpolated
+
+def optical_flow_interpolation_baseline(frame1_np, frame2_np):
+    """
+    Optical flow interpolation baseline using OpenCV
+    
+    Args:
+        frame1_np: First frame as numpy array (H, W) with values in [0, 255]
+        frame2_np: Second frame as numpy array (H, W) with values in [0, 255]
+    
+    Returns:
+        Interpolated frame as numpy array (H, W) with values in [0, 255]
+    """
+    # Ensure frames are uint8
+    frame1_uint8 = frame1_np.astype(np.uint8)
+    frame2_uint8 = frame2_np.astype(np.uint8)
+    
+    # Calculate optical flow from frame1 to frame2
+    flow = cv2.calcOpticalFlowFarneback(
+        frame1_uint8, frame2_uint8, 
+        None,  # No previous flow
+        pyr_scale=0.5,  # Pyramid scale
+        levels=3,        # Number of pyramid levels
+        winsize=15,      # Window size
+        iterations=3,    # Number of iterations
+        poly_n=5,        # Polynomial degree
+        poly_sigma=1.1,  # Gaussian sigma
+        flags=0          # Flags
+    )
+    
+    # Calculate intermediate flow (halfway between frames)
+    flow_half = flow * 0.5
+    
+    # Warp frame1 using the intermediate flow
+    h, w = frame1_uint8.shape
+    y_coords, x_coords = np.mgrid[0:h, 0:w].astype(np.float32)
+    
+    # Apply flow displacement
+    new_x = x_coords + flow_half[:, :, 0]
+    new_y = y_coords + flow_half[:, :, 1]
+    
+    # Ensure coordinates are within bounds
+    new_x = np.clip(new_x, 0, w - 1)
+    new_y = np.clip(new_y, 0, h - 1)
+    
+    # Interpolate frame1 at new positions
+    interpolated = cv2.remap(
+        frame1_uint8, new_x, new_y, 
+        cv2.INTER_LINEAR, 
+        borderMode=cv2.BORDER_REPLICATE
+    )
     
     return interpolated
 
@@ -296,53 +363,110 @@ def evaluate_model(model, test_triplets, device, save_results=False, output_dir=
 
 def print_evaluation_summary(results):
     """
-    Print evaluation results summary
+    Print evaluation results summary for all methods
     
     Args:
-        results: Dictionary with evaluation results
+        results: Dictionary with evaluation results for all methods
     """
-    print("\n" + "="*60)
-    print("EVALUATION RESULTS SUMMARY")
-    print("="*60)
+    print("\n" + "="*80)
+    print("EVALUATION RESULTS SUMMARY - ALL METHODS")
+    print("="*80)
     print(f"Total test triplets: {results['total_triplets']}")
     print(f"Successful evaluations: {results['successful_evaluations']}")
     print()
     
-    print("PSNR (Peak Signal-to-Noise Ratio):")
-    print(f"  Average: {results['average_psnr']:.4f} dB")
-    print(f"  Std Dev: {results['std_psnr']:.4f} dB")
-    print(f"  Range:   {results['min_psnr']:.4f} - {results['max_psnr']:.4f} dB")
+    # Print results for each method
+    for method in results['methods']:
+        method_name = method.replace('_', ' ').title()
+        metrics = results['metrics_by_method'][method]
+        
+        print(f"{method_name.upper()} METHOD:")
+        print("-" * 50)
+        print(f"PSNR (Peak Signal-to-Noise Ratio):")
+        print(f"  Average: {metrics['average_psnr']:.4f} dB")
+        print(f"  Std Dev: {metrics['std_psnr']:.4f} dB")
+        print(f"  Range:   {metrics['min_psnr']:.4f} - {metrics['max_psnr']:.4f} dB")
+        print()
+        print(f"SSIM (Structural Similarity Index):")
+        print(f"  Average: {metrics['average_ssim']:.4f}")
+        print(f"  Std Dev: {metrics['std_ssim']:.4f}")
+        print(f"  Range:   {metrics['min_ssim']:.4f} - {metrics['max_ssim']:.4f}")
+        print()
+    
+    # Print method comparison
+    print("METHOD COMPARISON:")
+    print("=" * 50)
+    print(f"{'Method':<20} | {'PSNR (dB)':<12} | {'SSIM':<8} | {'Improvement':<15}")
+    print("-" * 70)
+    
+    # Get baseline method (linear interpolation)
+    baseline_psnr = results['metrics_by_method']['linear']['average_psnr']
+    baseline_ssim = results['metrics_by_method']['linear']['average_ssim']
+    
+    for method in results['methods']:
+        method_name = method.replace('_', ' ').title()
+        metrics = results['metrics_by_method'][method]
+        
+        # Calculate improvement over baseline
+        if method == 'linear':
+            psnr_improvement = "Baseline"
+            ssim_improvement = "Baseline"
+        else:
+            psnr_improvement = f"+{metrics['average_psnr'] - baseline_psnr:+.2f} dB"
+            ssim_improvement = f"+{metrics['average_ssim'] - baseline_ssim:+.4f}"
+        
+        print(f"{method_name:<20} | {metrics['average_psnr']:<12.4f} | {metrics['average_ssim']:<8.4f} | {psnr_improvement:<15}")
+    
     print()
     
-    print("SSIM (Structural Similarity Index):")
-    print(f"  Average: {results['average_ssim']:.4f}")
-    print(f"  Std Dev: {results['std_ssim']:.4f}")
-    print(f"  Range:   {results['min_ssim']:.4f} - {results['max_ssim']:.4f}")
-    print()
-    
-    # Print per-video breakdown if available
-    if results['detailed_results']:
+    # Print per-video breakdown for U-Net method
+    if results['results_by_method']['unet']:
+        print("PER-VIDEO BREAKDOWN (U-Net Method):")
+        print("-" * 50)
+        
         video_metrics = {}
-        for result in results['detailed_results']:
+        for result in results['results_by_method']['unet']:
             video_name = result['video_name']
             if video_name not in video_metrics:
                 video_metrics[video_name] = {'psnr': [], 'ssim': []}
             video_metrics[video_name]['psnr'].append(result['psnr'])
             video_metrics[video_name]['ssim'].append(result['ssim'])
         
-        print("Per-Video Breakdown:")
-        print("-" * 40)
         for video_name, metrics in video_metrics.items():
             avg_video_psnr = np.mean(metrics['psnr'])
             avg_video_ssim = np.mean(metrics['ssim'])
             print(f"{video_name:20s} | PSNR: {avg_video_psnr:6.4f} | SSIM: {avg_video_ssim:6.4f}")
+    
+    print()
+    
+    # Print statistical significance analysis
+    print("STATISTICAL ANALYSIS:")
+    print("-" * 30)
+    
+    # Compare U-Net vs Linear
+    unet_psnr = results['metrics_by_method']['unet']['average_psnr']
+    linear_psnr = results['metrics_by_method']['linear']['average_psnr']
+    unet_ssim = results['metrics_by_method']['unet']['average_ssim']
+    linear_ssim = results['metrics_by_method']['linear']['average_ssim']
+    
+    print(f"U-Net vs Linear Interpolation:")
+    print(f"  PSNR improvement: {unet_psnr - linear_psnr:+.4f} dB")
+    print(f"  SSIM improvement: {unet_ssim - linear_ssim:+.4f}")
+    
+    # Compare U-Net vs Optical Flow
+    optical_flow_psnr = results['metrics_by_method']['optical_flow']['average_psnr']
+    optical_flow_ssim = results['metrics_by_method']['optical_flow']['average_ssim']
+    
+    print(f"U-Net vs Optical Flow:")
+    print(f"  PSNR improvement: {unet_psnr - optical_flow_psnr:+.4f} dB")
+    print(f"  SSIM improvement: {unet_ssim - optical_flow_ssim:+.4f}")
 
 def save_evaluation_results(results, output_path):
     """
     Save evaluation results to JSON file
     
     Args:
-        results: Dictionary with evaluation results
+        results: Dictionary with evaluation results for all methods
         output_path: Path to save JSON file
     """
     # Convert numpy types to Python types for JSON serialization
@@ -362,6 +486,123 @@ def save_evaluation_results(results, output_path):
         json.dump(json_results, f, indent=2)
     
     print(f"Evaluation results saved to: {output_path}")
+    
+    # Also save a summary CSV file
+    csv_path = output_path.replace('.json', '_summary.csv')
+    try:
+        import pandas as pd
+        
+        # Create summary dataframe
+        summary_data = []
+        for method in results['methods']:
+            method_name = method.replace('_', ' ').title()
+            metrics = results['metrics_by_method'][method]
+            
+            summary_data.append({
+                'Method': method_name,
+                'Average_PSNR_dB': metrics['average_psnr'],
+                'Std_PSNR_dB': metrics['std_psnr'],
+                'Min_PSNR_dB': metrics['min_psnr'],
+                'Max_PSNR_dB': metrics['max_psnr'],
+                'Average_SSIM': metrics['average_ssim'],
+                'Std_SSIM': metrics['std_ssim'],
+                'Min_SSIM': metrics['min_ssim'],
+                'Max_SSIM': metrics['max_ssim']
+            })
+        
+        df = pd.DataFrame(summary_data)
+        df.to_csv(csv_path, index=False)
+        print(f"Summary CSV saved to: {csv_path}")
+        
+    except ImportError:
+        print("pandas not available, skipping CSV export")
+
+def create_comparison_plots(results, output_dir):
+    """
+    Create comparison plots for all methods
+    
+    Args:
+        results: Dictionary with evaluation results for all methods
+        output_dir: Directory to save plots
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        # Set style
+        plt.style.use('default')
+        sns.set_palette("husl")
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Extract data for plotting
+        methods = results['methods']
+        method_names = [method.replace('_', ' ').title() for method in methods]
+        
+        psnr_data = [results['metrics_by_method'][method]['average_psnr'] for method in methods]
+        ssim_data = [results['metrics_by_method'][method]['average_ssim'] for method in methods]
+        
+        # Create PSNR comparison plot
+        plt.figure(figsize=(10, 6))
+        bars = plt.bar(method_names, psnr_data, color=['#2E86AB', '#A23B72', '#F18F01'])
+        plt.title('PSNR Comparison Across Methods', fontsize=16, fontweight='bold')
+        plt.ylabel('PSNR (dB)', fontsize=12)
+        plt.xlabel('Method', fontsize=12)
+        plt.xticks(rotation=45)
+        
+        # Add value labels on bars
+        for bar, value in zip(bars, psnr_data):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1, 
+                    f'{value:.2f}', ha='center', va='bottom', fontweight='bold')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'psnr_comparison.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Create SSIM comparison plot
+        plt.figure(figsize=(10, 6))
+        bars = plt.bar(method_names, ssim_data, color=['#2E86AB', '#A23B72', '#F18F01'])
+        plt.title('SSIM Comparison Across Methods', fontsize=16, fontweight='bold')
+        plt.ylabel('SSIM', fontsize=12)
+        plt.xlabel('Method', fontsize=12)
+        plt.xticks(rotation=45)
+        
+        # Add value labels on bars
+        for bar, value in zip(bars, ssim_data):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                    f'{value:.4f}', ha='center', va='bottom', fontweight='bold')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'ssim_comparison.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Create combined metrics plot
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # PSNR subplot
+        bars1 = ax1.bar(method_names, psnr_data, color=['#2E86AB', '#A23B72', '#F18F01'])
+        ax1.set_title('PSNR Comparison', fontsize=14, fontweight='bold')
+        ax1.set_ylabel('PSNR (dB)', fontsize=12)
+        ax1.tick_params(axis='x', rotation=45)
+        
+        # SSIM subplot
+        bars2 = ax2.bar(method_names, ssim_data, color=['#2E86AB', '#A23B72', '#F18F01'])
+        ax2.set_title('SSIM Comparison', fontsize=14, fontweight='bold')
+        ax2.set_ylabel('SSIM', fontsize=12)
+        ax2.tick_params(axis='x', rotation=45)
+        
+        plt.suptitle('Frame Interpolation Methods Comparison', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'methods_comparison.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Comparison plots saved to: {output_dir}")
+        
+    except ImportError:
+        print("matplotlib/seaborn not available, skipping plot generation")
+    except Exception as e:
+        print(f"Error creating plots: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate Frame Interpolation Model')
@@ -371,6 +612,7 @@ def main():
     parser.add_argument('--save-results', action='store_true', help='Save generated frames')
     parser.add_argument('--output-dir', default='evaluation_results', help='Directory to save results')
     parser.add_argument('--json-output', help='Path to save evaluation results as JSON')
+    parser.add_argument('--generate-plots', action='store_true', help='Generate comparison plots')
     
     args = parser.parse_args()
     
@@ -417,6 +659,10 @@ def main():
         if args.save_results:
             default_json_path = os.path.join(args.output_dir, 'evaluation_results.json')
             save_evaluation_results(results, default_json_path)
+        
+        # Generate comparison plots if requested
+        if args.generate_plots:
+            create_comparison_plots(results, args.output_dir)
         
         print("\nEvaluation completed successfully!")
         
