@@ -1,176 +1,183 @@
 import torch
+import torch.nn.functional as F
 import cv2
 import numpy as np
 import os
+import argparse
+from pathlib import Path
 from unet import FrameInterpolationUNet
-from skimage.metrics import structural_similarity as ssim
-from skimage.metrics import peak_signal_noise_ratio as psnr
 
-class FrameInterpolator:
-    def __init__(self, model_path, device='cuda'):
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
-        self.model = FrameInterpolationUNet(bilinear=True)
-        
-        # Load trained model
-        if os.path.exists(model_path):
-            checkpoint = torch.load(model_path, map_location=self.device)
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"Model loaded from {model_path}")
-        else:
-            print(f"Warning: Model file {model_path} not found. Using untrained model.")
-        
-        self.model = self.model.to(self.device)
-        self.model.eval()
+def preprocess_image(image_path, target_size=(256, 256)):
+    """
+    Preprocess image: resize to target size and normalize to [-1, 1]
     
-    def preprocess_frame(self, frame):
-        """Preprocess a single frame for model input"""
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Resize to model input size (256x256)
-        frame_resized = cv2.resize(frame_rgb, (256, 256))
-        
-        # Normalize to [0, 1]
-        frame_normalized = frame_resized.astype(np.float32) / 255.0
-        
-        # Convert to tensor and add batch dimension
-        frame_tensor = torch.from_numpy(frame_normalized).permute(2, 0, 1).unsqueeze(0)
-        
-        return frame_tensor
+    Args:
+        image_path: Path to input image
+        target_size: Target size (width, height)
     
-    def postprocess_frame(self, frame_tensor):
-        """Convert model output back to image format"""
-        # Remove batch dimension and convert to numpy
-        frame_np = frame_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
-        
-        # Clip values to [0, 1]
-        frame_np = np.clip(frame_np, 0, 1)
-        
-        # Convert to uint8 [0, 255]
-        frame_uint8 = (frame_np * 255).astype(np.uint8)
-        
-        # Convert RGB to BGR for OpenCV
-        frame_bgr = cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2BGR)
-        
-        return frame_bgr
+    Returns:
+        Preprocessed tensor of shape [1, 1, H, W] with values in [-1, 1]
+    """
+    # Read image as grayscale
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     
-    def interpolate_frames(self, frame1, frame2):
-        """Interpolate between two frames to generate an intermediate frame"""
-        # Preprocess frames
-        frame1_tensor = self.preprocess_frame(frame1).to(self.device)
-        frame2_tensor = self.preprocess_frame(frame2).to(self.device)
-        
-        with torch.no_grad():
-            # Generate intermediate frame
-            intermediate_tensor = self.model(frame1_tensor, frame2_tensor)
-        
-        # Postprocess output
-        intermediate_frame = self.postprocess_frame(intermediate_tensor)
-        
-        return intermediate_frame
+    if image is None:
+        raise ValueError(f"Could not read image from {image_path}")
     
-    def interpolate_video(self, video_path, output_path, interpolation_factor=2):
-        """Interpolate frames in a video to increase frame rate"""
-        cap = cv2.VideoCapture(video_path)
-        
-        # Get video properties
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        # Setup video writer
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps * interpolation_factor, (width, height))
-        
-        print(f"Processing video: {total_frames} frames, {fps} FPS")
-        print(f"Output: {fps * interpolation_factor} FPS")
-        
-        ret, prev_frame = cap.read()
-        if not ret:
-            print("Error reading video")
-            return
-        
-        # Write first frame
-        out.write(prev_frame)
-        
-        frame_count = 1
-        
-        while True:
-            ret, curr_frame = cap.read()
-            if not ret:
-                break
-            
-            # Write current frame
-            out.write(curr_frame)
-            
-            # Generate and write interpolated frame
-            if frame_count < total_frames - 1:
-                interpolated_frame = self.interpolate_frames(prev_frame, curr_frame)
-                
-                # Resize interpolated frame to match video dimensions
-                interpolated_frame_resized = cv2.resize(interpolated_frame, (width, height))
-                out.write(interpolated_frame_resized)
-            
-            prev_frame = curr_frame.copy()
-            frame_count += 1
-            
-            if frame_count % 10 == 0:
-                print(f"Processed {frame_count}/{total_frames} frames")
-        
-        cap.release()
-        out.release()
-        print(f"Video interpolation completed. Output saved to: {output_path}")
+    # Resize to target size
+    image = cv2.resize(image, target_size)
     
-    def evaluate_interpolation(self, frame1, frame2, ground_truth):
-        """Evaluate interpolation quality using SSIM and PSNR"""
-        interpolated = self.interpolate_frames(frame1, frame2)
-        
-        # Convert to grayscale for SSIM calculation
-        gt_gray = cv2.cvtColor(ground_truth, cv2.COLOR_BGR2GRAY)
-        interp_gray = cv2.cvtColor(interpolated, cv2.COLOR_BGR2GRAY)
-        
-        # Calculate metrics
-        ssim_score = ssim(gt_gray, interp_gray)
-        psnr_score = psnr(gt_gray, interp_gray)
-        
-        return {
-            'ssim': ssim_score,
-            'psnr': psnr_score,
-            'interpolated_frame': interpolated
-        }
+    # Convert to float32 and normalize to [0, 1]
+    image = image.astype(np.float32) / 255.0
+    
+    # Normalize to [-1, 1]
+    image = 2.0 * image - 1.0
+    
+    # Convert to tensor and add batch and channel dimensions
+    # Shape: [1, 1, H, W]
+    image_tensor = torch.from_numpy(image).unsqueeze(0).unsqueeze(0)
+    
+    return image_tensor
+
+def postprocess_image(tensor):
+    """
+    Postprocess tensor: convert from [-1, 1] to [0, 255] uint8
+    
+    Args:
+        tensor: Input tensor with values in [-1, 1]
+    
+    Returns:
+        Postprocessed image as uint8 array with values in [0, 255]
+    """
+    # Convert from [-1, 1] to [0, 1]
+    image = (tensor + 1.0) / 2.0
+    
+    # Clip values to [0, 1]
+    image = torch.clamp(image, 0.0, 1.0)
+    
+    # Convert to numpy and scale to [0, 255]
+    image_np = image.squeeze().cpu().numpy()
+    image_uint8 = (image_np * 255).astype(np.uint8)
+    
+    return image_uint8
+
+def load_model(model_path, device):
+    """
+    Load trained U-Net model
+    
+    Args:
+        model_path: Path to trained model checkpoint
+        device: Device to load model on
+    
+    Returns:
+        Loaded model
+    """
+    # Create model
+    model = FrameInterpolationUNet(bilinear=True)
+    
+    # Load checkpoint
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+    
+    checkpoint = torch.load(model_path, map_location=device)
+    
+    # Load model state dict
+    if 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Model loaded from {model_path}")
+        print(f"Trained for {checkpoint.get('epoch', 'Unknown')} epochs")
+        print(f"Best validation loss: {checkpoint.get('val_loss', 'Unknown'):.6f}")
+    else:
+        # If it's just the state dict
+        model.load_state_dict(checkpoint)
+        print(f"Model state dict loaded from {model_path}")
+    
+    model = model.to(device)
+    model.eval()
+    
+    return model
+
+def interpolate_frames(model, frame1, frame2, device):
+    """
+    Generate interpolated frame between two input frames
+    
+    Args:
+        model: Trained U-Net model
+        frame1: First frame tensor [1, 1, H, W]
+        frame2: Second frame tensor [1, 1, H, W]
+        device: Device to run inference on
+    
+    Returns:
+        Interpolated frame tensor
+    """
+    # Move inputs to device
+    frame1 = frame1.to(device)
+    frame2 = frame2.to(device)
+    
+    # Generate interpolated frame
+    with torch.no_grad():
+        interpolated = model(frame1, frame2)
+    
+    return interpolated
 
 def main():
-    # Example usage
-    interpolator = FrameInterpolator('best_model.pth')
+    parser = argparse.ArgumentParser(description='Frame Interpolation Inference')
+    parser.add_argument('--frame1', required=True, help='Path to first input frame')
+    parser.add_argument('--frame2', required=True, help='Path to second input frame')
+    parser.add_argument('--model', default='best_model.pth', help='Path to trained model')
+    parser.add_argument('--output', default='output.png', help='Output image path')
+    parser.add_argument('--device', default='auto', help='Device to use (cuda/cpu/auto)')
     
-    # Example: Interpolate between two frames
-    if len(sys.argv) >= 3:
-        frame1_path = sys.argv[1]
-        frame2_path = sys.argv[2]
-        
-        frame1 = cv2.imread(frame1_path)
-        frame2 = cv2.imread(frame2_path)
-        
-        if frame1 is not None and frame2 is not None:
-            interpolated = interpolator.interpolate_frames(frame1, frame2)
-            
-            # Save result
-            output_path = 'interpolated_frame.jpg'
-            cv2.imwrite(output_path, interpolated)
-            print(f"Interpolated frame saved to: {output_path}")
-            
-            # Display frames
-            cv2.imshow('Frame 1', frame1)
-            cv2.imshow('Frame 2', frame2)
-            cv2.imshow('Interpolated', interpolated)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-        else:
-            print("Error: Could not read input frames")
+    args = parser.parse_args()
+    
+    # Set device
+    if args.device == 'auto':
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     else:
-        print("Usage: python inference.py <frame1_path> <frame2_path>")
+        device = torch.device(args.device)
+    
+    print(f"Using device: {device}")
+    
+    try:
+        # Load and preprocess input frames
+        print("Loading and preprocessing input frames...")
+        frame1 = preprocess_image(args.frame1)
+        frame2 = preprocess_image(args.frame2)
+        
+        print(f"Frame 1 shape: {frame1.shape}")
+        print(f"Frame 2 shape: {frame2.shape}")
+        
+        # Load trained model
+        print("Loading trained model...")
+        model = load_model(args.model, device)
+        
+        # Generate interpolated frame
+        print("Generating interpolated frame...")
+        interpolated = interpolate_frames(model, frame1, frame2, device)
+        
+        print(f"Interpolated frame shape: {interpolated.shape}")
+        
+        # Postprocess and save result
+        print("Postprocessing and saving result...")
+        output_image = postprocess_image(interpolated)
+        
+        # Save result
+        cv2.imwrite(args.output, output_image)
+        print(f"Interpolated frame saved to: {args.output}")
+        
+        # Print some statistics
+        print(f"Input frame 1 range: [{frame1.min().item():.3f}, {frame1.max().item():.3f}]")
+        print(f"Input frame 2 range: [{frame2.min().item():.3f}, {frame2.max().item():.3f}]")
+        print(f"Output range: [{interpolated.min().item():.3f}, {interpolated.max().item():.3f}]")
+        print(f"Output image range: [{output_image.min()}, {output_image.max()}]")
+        
+        print("Inference completed successfully!")
+        
+    except Exception as e:
+        print(f"Error during inference: {e}")
+        return 1
+    
+    return 0
 
 if __name__ == '__main__':
-    import sys
-    main()
+    exit(main())
