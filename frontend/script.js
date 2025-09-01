@@ -1,373 +1,333 @@
-// API base URL
-const API_BASE_URL = 'http://localhost:8000';
-
-// DOM elements
-const frameUploadArea = document.getElementById('frameUploadArea');
-const frame1Input = document.getElementById('frame1Input');
-const frame2Input = document.getElementById('frame2Input');
-const framePreview = document.getElementById('framePreview');
-const frame1Preview = document.getElementById('frame1Preview');
-const frame2Preview = document.getElementById('frame2Preview');
-const interpolateBtn = document.getElementById('interpolateBtn');
-
-const videoUploadArea = document.getElementById('videoUploadArea');
-const videoInput = document.getElementById('videoInput');
-const videoPreview = document.getElementById('videoPreview');
-const videoPreviewElement = document.getElementById('videoPreviewElement');
-const interpolationFactor = document.getElementById('interpolationFactor');
-const interpolateVideoBtn = document.getElementById('interpolateVideoBtn');
-
-const loading = document.getElementById('loading');
-const resultContainer = document.getElementById('resultContainer');
-const resultImage = document.getElementById('resultImage');
-const metrics = document.getElementById('metrics');
-const ssimValue = document.getElementById('ssimValue');
-const psnrValue = document.getElementById('psnrValue');
-const downloadBtn = document.getElementById('downloadBtn');
-
-// State variables
+// Global variables
 let frame1File = null;
 let frame2File = null;
-let videoFile = null;
-let currentResult = null;
+let currentVideoBlob = null;
+
+// API configuration
+const API_BASE_URL = 'http://localhost:8000'; // Change this if your API runs on a different port
+
+// DOM elements
+const uploadBox1 = document.getElementById('upload-box-1');
+const uploadBox2 = document.getElementById('upload-box-2');
+const fileInput1 = document.getElementById('file-input-1');
+const fileInput2 = document.getElementById('file-input-2');
+const generateBtn = document.getElementById('generate-btn');
+const loading = document.getElementById('loading');
+const resultSection = document.getElementById('result-section');
+const resultVideo = document.getElementById('result-video');
+const downloadBtn = document.getElementById('download-btn');
+const errorMessage = document.getElementById('error-message');
+const successMessage = document.getElementById('success-message');
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
-    setupEventListeners();
-    checkAPIHealth();
+    setupFileInputs();
+    setupDragAndDrop();
+    updateGenerateButton();
 });
 
-function setupEventListeners() {
-    // Frame interpolation events
-    frameUploadArea.addEventListener('click', () => {
-        frame1Input.click();
-    });
-    
-    frame1Input.addEventListener('change', (e) => handleFrame1Selection(e));
-    frame2Input.addEventListener('change', (e) => handleFrame2Selection(e));
-    
-    interpolateBtn.addEventListener('click', handleFrameInterpolation);
-    
-    // Video interpolation events
-    videoUploadArea.addEventListener('click', () => {
-        videoInput.click();
-    });
-    
-    videoInput.addEventListener('change', (e) => handleVideoSelection(e));
-    interpolateVideoBtn.addEventListener('click', handleVideoInterpolation);
-    
-    // Download button
-    downloadBtn.addEventListener('click', handleDownload);
-    
-    // Drag and drop events
-    setupDragAndDrop();
+// Setup file input event listeners
+function setupFileInputs() {
+    fileInput1.addEventListener('change', (e) => handleFileSelect(e, 1));
+    fileInput2.addEventListener('change', (e) => handleFileSelect(e, 2));
 }
 
+// Setup drag and drop functionality
 function setupDragAndDrop() {
-    // Frame upload area drag and drop
-    frameUploadArea.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        frameUploadArea.classList.add('dragover');
-    });
-    
-    frameUploadArea.addEventListener('dragleave', () => {
-        frameUploadArea.classList.remove('dragover');
-    });
-    
-    frameUploadArea.addEventListener('drop', (e) => {
-        e.preventDefault();
-        frameUploadArea.classList.remove('dragover');
-        
-        const files = Array.from(e.dataTransfer.files);
-        if (files.length >= 2) {
-            handleDroppedFrames(files[0], files[1]);
-        }
-    });
-    
-    // Video upload area drag and drop
-    videoUploadArea.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        videoUploadArea.classList.add('dragover');
-    });
-    
-    videoUploadArea.addEventListener('dragleave', () => {
-        videoUploadArea.classList.remove('dragover');
-    });
-    
-    videoUploadArea.addEventListener('drop', (e) => {
-        e.preventDefault();
-        videoUploadArea.classList.remove('dragover');
-        
-        const files = Array.from(e.dataTransfer.files);
-        if (files.length > 0 && files[0].type.startsWith('video/')) {
-            handleDroppedVideo(files[0]);
-        }
+    [uploadBox1, uploadBox2].forEach((box, index) => {
+        box.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            box.classList.add('dragover');
+        });
+
+        box.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            box.classList.remove('dragover');
+        });
+
+        box.addEventListener('drop', (e) => {
+            e.preventDefault();
+            box.classList.remove('dragover');
+            handleFileDrop(e, index + 1);
+        });
     });
 }
 
-function handleDroppedFrames(file1, file2) {
-    if (file1.type.startsWith('image/') && file2.type.startsWith('image/')) {
-        frame1File = file1;
-        frame2File = file2;
-        updateFramePreviews();
-        updateInterpolateButton();
+// Handle file selection from file input
+function handleFileSelect(event, frameNumber) {
+    const file = event.target.files[0];
+    if (file && validateImageFile(file)) {
+        setFrameFile(file, frameNumber);
+    } else {
+        showError(`Invalid file selected for Frame ${frameNumber}. Please select a valid image file.`);
     }
 }
 
-function handleDroppedVideo(file) {
-    if (file.type.startsWith('video/')) {
-        videoFile = file;
-        updateVideoPreview();
-        updateVideoInterpolateButton();
+// Handle file drop from drag and drop
+function handleFileDrop(event, frameNumber) {
+    const file = event.dataTransfer.files[0];
+    if (file && validateImageFile(file)) {
+        setFrameFile(file, frameNumber);
+        // Update the file input to reflect the dropped file
+        const fileInput = frameNumber === 1 ? fileInput1 : fileInput2;
+        fileInput.files = event.dataTransfer.files;
+    } else {
+        showError(`Invalid file dropped for Frame ${frameNumber}. Please drop a valid image file.`);
     }
 }
 
-function handleFrame1Selection(e) {
-    const file = e.target.files[0];
-    if (file && file.type.startsWith('image/')) {
+// Validate image file
+function validateImageFile(file) {
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/bmp', 'image/tiff', 'image/tif'];
+    const maxSize = 50 * 1024 * 1024; // 50MB
+
+    if (!allowedTypes.includes(file.type)) {
+        return false;
+    }
+
+    if (file.size > maxSize) {
+        return false;
+    }
+
+    return true;
+}
+
+// Set frame file and update UI
+function setFrameFile(file, frameNumber) {
+    if (frameNumber === 1) {
         frame1File = file;
-        updateFramePreviews();
-        updateInterpolateButton();
-    }
-}
-
-function handleFrame2Selection(e) {
-    const file = e.target.files[0];
-    if (file && file.type.startsWith('image/')) {
+        updateUploadBox(uploadBox1, file);
+    } else {
         frame2File = file;
-        updateFramePreviews();
-        updateInterpolateButton();
+        updateUploadBox(uploadBox2, file);
     }
-}
-
-function handleVideoSelection(e) {
-    const file = e.target.files[0];
-    if (file && file.type.startsWith('video/')) {
-        videoFile = file;
-        updateVideoPreview();
-        updateVideoInterpolateButton();
-    }
-}
-
-function updateFramePreviews() {
-    if (frame1File && frame2File) {
-        const reader1 = new FileReader();
-        const reader2 = new FileReader();
-        
-        reader1.onload = (e) => {
-            frame1Preview.src = e.target.result;
-        };
-        
-        reader2.onload = (e) => {
-            frame2Preview.src = e.target.result;
-        };
-        
-        reader1.readAsDataURL(frame1File);
-        reader2.readAsDataURL(frame2File);
-        
-        framePreview.style.display = 'grid';
-    }
-}
-
-function updateVideoPreview() {
-    if (videoFile) {
-        const url = URL.createObjectURL(videoFile);
-        videoPreviewElement.src = url;
-        videoPreview.style.display = 'grid';
-    }
-}
-
-function updateInterpolateButton() {
-    interpolateBtn.disabled = !(frame1File && frame2File);
-}
-
-function updateVideoInterpolateButton() {
-    interpolateVideoBtn.disabled = !videoFile;
-}
-
-async function handleFrameInterpolation() {
-    if (!frame1File || !frame2File) return;
     
-    showLoading(true);
+    updateGenerateButton();
+    hideMessages();
+}
+
+// Update upload box appearance
+function updateUploadBox(box, file) {
+    box.classList.add('has-file');
+    const uploadText = box.querySelector('.upload-text');
+    const fileInfo = box.querySelector('.file-info');
+    
+    uploadText.textContent = file.name;
+    fileInfo.textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
+}
+
+// Update generate button state
+function updateGenerateButton() {
+    generateBtn.disabled = !(frame1File && frame2File);
+}
+
+// Generate video function
+async function generateVideo() {
+    if (!frame1File || !frame2File) {
+        showError('Please select both frame files before generating video.');
+        return;
+    }
+
+    // Get parameters
+    const numIntermediate = parseInt(document.getElementById('num-intermediate').value);
+    const fps = parseInt(document.getElementById('fps').value);
+
+    // Show loading state
+    setLoading(true);
+    hideMessages();
     hideResult();
-    
+
     try {
+        // Create FormData
         const formData = new FormData();
         formData.append('frame1', frame1File);
         formData.append('frame2', frame2File);
-        
-        const response = await fetch(`${API_BASE_URL}/interpolate-frames`, {
+        formData.append('num_intermediate', numIntermediate);
+        formData.append('fps', fps);
+
+        // Make API call
+        const response = await fetch(`${API_BASE_URL}/interpolate`, {
             method: 'POST',
             body: formData
         });
-        
+
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            const errorData = await response.json();
+            throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
         }
-        
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        
-        currentResult = {
-            type: 'frame',
-            url: url,
-            filename: 'interpolated_frame.jpg'
-        };
-        
-        showResult(url);
-        showSuccess('Frame interpolation completed successfully!');
-        
+
+        // Get video blob
+        const videoBlob = await response.blob();
+        currentVideoBlob = videoBlob;
+
+        // Display video
+        displayVideo(videoBlob);
+        showSuccess(`Successfully generated video with ${numIntermediate} intermediate frames at ${fps} FPS!`);
+
     } catch (error) {
-        console.error('Error during frame interpolation:', error);
-        showError('Error during frame interpolation: ' + error.message);
+        console.error('Error generating video:', error);
+        showError(`Failed to generate video: ${error.message}`);
     } finally {
-        showLoading(false);
+        setLoading(false);
     }
 }
 
-async function handleVideoInterpolation() {
-    if (!videoFile) return;
+// Display video result
+function displayVideo(videoBlob) {
+    const videoUrl = URL.createObjectURL(videoBlob);
     
-    showLoading(true);
-    hideResult();
+    resultVideo.src = videoUrl;
+    resultVideo.load();
     
-    try {
-        const formData = new FormData();
-        formData.append('video', videoFile);
-        formData.append('interpolation_factor', interpolationFactor.value);
-        
-        const response = await fetch(`${API_BASE_URL}/interpolate-video`, {
-            method: 'POST',
-            body: formData
-        });
-        
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        
-        currentResult = {
-            type: 'video',
-            url: url,
-            filename: 'interpolated_video.mp4'
-        };
-        
-        showResult(url);
-        showSuccess('Video interpolation completed successfully!');
-        
-    } catch (error) {
-        console.error('Error during video interpolation:', error);
-        showError('Error during video interpolation: ' + error.message);
-    } finally {
-        showLoading(false);
-    }
+    // Update download button
+    downloadBtn.href = videoUrl;
+    downloadBtn.download = `interpolated_video_${Date.now()}.mp4`;
+    
+    // Show result section
+    resultSection.style.display = 'block';
+    
+    // Scroll to result
+    resultSection.scrollIntoView({ behavior: 'smooth' });
 }
 
-function showResult(url) {
-    if (currentResult.type === 'frame') {
-        resultImage.src = url;
-        resultImage.style.display = 'block';
-        metrics.style.display = 'none';
+// Set loading state
+function setLoading(isLoading) {
+    loading.style.display = isLoading ? 'block' : 'none';
+    generateBtn.disabled = isLoading;
+    
+    if (isLoading) {
+        generateBtn.textContent = '⏳ Processing...';
     } else {
-        // For video results, show a download link instead of image
-        resultImage.style.display = 'none';
-        resultImage.innerHTML = `
-            <div style="padding: 20px; background: #f8f9ff; border-radius: 15px;">
-                <i class="fas fa-video" style="font-size: 3rem; color: #667eea; margin-bottom: 15px;"></i>
-                <p style="color: #666; margin-bottom: 15px;">Video interpolation completed!</p>
-                <p style="color: #888; font-size: 0.9rem;">Click download to get your interpolated video</p>
-            </div>
-        `;
+        generateBtn.textContent = '🎬 Generate Video';
     }
-    
-    resultContainer.style.display = 'block';
-    resultContainer.scrollIntoView({ behavior: 'smooth' });
 }
 
-function hideResult() {
-    resultContainer.style.display = 'none';
-    currentResult = null;
-}
-
-function showLoading(show) {
-    loading.style.display = show ? 'block' : 'none';
-}
-
+// Show error message
 function showError(message) {
-    const errorDiv = document.createElement('div');
-    errorDiv.className = 'error';
-    errorDiv.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${message}`;
-    
-    // Remove any existing error messages
-    const existingErrors = document.querySelectorAll('.error');
-    existingErrors.forEach(err => err.remove());
-    
-    // Add new error message
-    document.querySelector('.container').appendChild(errorDiv);
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        errorDiv.remove();
-    }, 5000);
+    errorMessage.textContent = message;
+    errorMessage.style.display = 'block';
+    successMessage.style.display = 'none';
 }
 
+// Show success message
 function showSuccess(message) {
-    const successDiv = document.createElement('div');
-    successDiv.className = 'success';
-    successDiv.innerHTML = `<i class="fas fa-check-circle"></i> ${message}`;
-    
-    // Remove any existing success messages
-    const existingSuccess = document.querySelectorAll('.success');
-    existingSuccess.forEach(succ => succ.remove());
-    
-    // Add new success message
-    document.querySelector('.container').appendChild(successDiv);
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        successDiv.remove();
-    }, 5000);
+    successMessage.textContent = message;
+    successMessage.style.display = 'block';
+    errorMessage.style.display = 'none';
 }
 
-function handleDownload() {
-    if (!currentResult) return;
-    
-    const link = document.createElement('a');
-    link.href = currentResult.url;
-    link.download = currentResult.filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+// Hide all messages
+function hideMessages() {
+    errorMessage.style.display = 'none';
+    successMessage.style.display = 'none';
 }
 
-async function checkAPIHealth() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/health`);
-        if (response.ok) {
-            const data = await response.json();
-            if (data.interpolator_ready) {
-                console.log('API is healthy and ready');
-            } else {
-                console.warn('API is running but interpolator is not ready');
-                showError('Warning: The AI model is not loaded. Some features may not work.');
-            }
-        } else {
-            console.error('API health check failed');
-            showError('Warning: Cannot connect to the API server. Please ensure the backend is running.');
+// Hide result section
+function hideResult() {
+    resultSection.style.display = 'none';
+}
+
+// Reset application state
+function resetApp() {
+    frame1File = null;
+    frame2File = null;
+    currentVideoBlob = null;
+    
+    // Reset file inputs
+    fileInput1.value = '';
+    fileInput2.value = '';
+    
+    // Reset upload boxes
+    uploadBox1.classList.remove('has-file');
+    uploadBox2.classList.remove('has-file');
+    uploadBox1.querySelector('.upload-text').textContent = 'Click to upload Frame 1';
+    uploadBox1.querySelector('.file-info').textContent = 'or drag & drop';
+    uploadBox2.querySelector('.upload-text').textContent = 'Click to upload Frame 2';
+    uploadBox2.querySelector('.file-info').textContent = 'or drag & drop';
+    
+    // Reset controls
+    document.getElementById('num-intermediate').value = '3';
+    document.getElementById('fps').value = '30';
+    
+    // Hide results and messages
+    hideResult();
+    hideMessages();
+    
+    // Update button state
+    updateGenerateButton();
+}
+
+// Add reset button functionality (optional)
+function addResetButton() {
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = '🔄 Reset';
+    resetBtn.className = 'download-btn';
+    resetBtn.style.background = '#ff9800';
+    resetBtn.onclick = resetApp;
+    
+    const downloadSection = document.querySelector('.download-section');
+    downloadSection.appendChild(resetBtn);
+}
+
+// Initialize reset button
+document.addEventListener('DOMContentLoaded', function() {
+    addResetButton();
+});
+
+// Handle video errors
+resultVideo.addEventListener('error', function() {
+    showError('Error loading video. Please try again.');
+});
+
+// Handle video load success
+resultVideo.addEventListener('loadeddata', function() {
+    console.log('Video loaded successfully');
+});
+
+// Add keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+    // Ctrl/Cmd + Enter to generate video
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        if (!generateBtn.disabled) {
+            generateVideo();
         }
-    } catch (error) {
-        console.error('API health check error:', error);
-        showError('Warning: Cannot connect to the API server. Please ensure the backend is running.');
     }
+    
+    // Escape to hide messages
+    if (e.key === 'Escape') {
+        hideMessages();
+    }
+});
+
+// Add file size validation feedback
+function validateFileSize(file) {
+    const maxSize = 50 * 1024 * 1024; // 50MB
+    if (file.size > maxSize) {
+        showError(`File ${file.name} is too large. Maximum size is 50MB.`);
+        return false;
+    }
+    return true;
 }
 
-// Utility function to format file size
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+// Add file type validation feedback
+function validateFileType(file) {
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/bmp', 'image/tiff', 'image/tif'];
+    if (!allowedTypes.includes(file.type)) {
+        showError(`File ${file.name} is not a supported image type. Please use JPG, PNG, BMP, or TIFF.`);
+        return false;
+    }
+    return true;
+}
+
+// Enhanced file validation
+function validateImageFile(file) {
+    if (!validateFileType(file)) {
+        return false;
+    }
+    
+    if (!validateFileSize(file)) {
+        return false;
+    }
+    
+    return true;
 }
